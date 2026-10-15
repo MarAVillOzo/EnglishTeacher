@@ -1,0 +1,13 @@
+AISLAMIENTO Y PRIVACIDAD - V2.0
+
+Aislinn V2.0 is intentionally isolated.
+- Microphone STT files live only under app\runtime and app\models.
+- No Windows Speech Recognition capabilities are installed.
+- No drivers are installed or removed.
+- No default audio device is changed.
+- No registry audio setting is changed.
+- No PATH/environment variable is changed.
+- No administrator permission is requested by the app or local microphone preparation.
+- Ollama is accessed only on localhost and is never stopped/removed.
+- Unreal, MetaHuman and .uproject files are not used.
+- The app only terminates its own temporary whisper-stream child process when a listening operation times out/cancels.

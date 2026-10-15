@@ -1,0 +1,12 @@
+{
+  "preferred_models": [
+    "qwen3:14b",
+    "qwen3:8b",
+    "qwen3:4b",
+    "qwen3:1.7b"
+  ],
+  "ollama_host": "http://127.0.0.1:11434",
+  "ai_timeout_seconds": 150,
+  "voice_rate": 0,
+  "local_stt": "whisper.cpp tiny.en-q5_1"
+}

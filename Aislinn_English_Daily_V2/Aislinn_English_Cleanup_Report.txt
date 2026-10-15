@@ -1,0 +1,14 @@
+﻿=== AISLINN ENGLISH DAILY - SAFE CLEANUP ===
+Started: 2026-09-30T11:19:53
+Removed: C:\Users\DELL OPTIPLEX 7060\AppData\Local\Aislinn English Daily
+Removed: C:\Users\DELL OPTIPLEX 7060\AppData\Local\Programs\Aislinn English Daily
+Removed old package: C:\Users\DELL OPTIPLEX 7060\Downloads\Aislinn_English_Daily_V1_1_Fix_Windows.zip
+Removed old package: C:\Users\DELL OPTIPLEX 7060\Downloads\Aislinn_English_Daily_V1_2_Fix_Windows.zip
+Removed old package: C:\Users\DELL OPTIPLEX 7060\Downloads\Aislinn_English_Daily_V1_3_Validated_Windows.zip
+Removed old package: C:\Users\DELL OPTIPLEX 7060\Downloads\Aislinn_English_Daily_V1_5_Microphone_Rebuild_Windows.zip
+Removed old package: C:\Users\DELL OPTIPLEX 7060\Downloads\Aislinn_English_Daily_V1_6_1_StartupFix_Windows.zip
+Removed old package: C:\Users\DELL OPTIPLEX 7060\Downloads\Aislinn_English_Daily_V1_6_Speech_Installer_Windows.zip
+Removed old package: C:\Users\DELL OPTIPLEX 7060\Downloads\Aislinn_English_Daily_V1_Windows.zip
+
+NOT TOUCHED: Ollama, Qwen, Windows speech/language capabilities, audio drivers, audio devices, Unreal, TanyaCode, InciteWave.
+Finished: 2026-09-30T11:19:54

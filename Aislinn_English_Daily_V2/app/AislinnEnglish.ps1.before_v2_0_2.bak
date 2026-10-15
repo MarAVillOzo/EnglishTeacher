@@ -1,0 +1,1023 @@
+﻿# Aislinn English Daily V2.0.1.1
+# Entrenador de ingles diario 2D, local y ligero para Windows.
+# No usa Unreal. El reconocimiento de voz usa un motor whisper.cpp privado dentro de Aislinn.
+# System.Speech se usa SOLO para sintesis de voz si hay una voz instalada; nunca para reconocer el microfono.
+# La IA se limita a la API local de Ollama en 127.0.0.1.
+
+$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName PresentationFramework
+Add-Type -AssemblyName PresentationCore
+Add-Type -AssemblyName WindowsBase
+Add-Type -AssemblyName System.Xaml
+try { Add-Type -AssemblyName System.Speech -ErrorAction Stop; $script:TtsAssemblyReady=$true } catch { $script:TtsAssemblyReady=$false }
+
+$createdNew = $false
+$script:SingleInstanceMutex = New-Object System.Threading.Mutex -ArgumentList $false, 'Local\AislinnEnglishDailyV2'
+try {
+    $createdNew = $script:SingleInstanceMutex.WaitOne(0, $false)
+} catch [System.Threading.AbandonedMutexException] {
+    $createdNew = $true
+}
+if(-not $createdNew){
+    [System.Windows.MessageBox]::Show('Aislinn English Daily ya esta abierta.','Aislinn English Daily','OK','Information') | Out-Null
+    try { $script:SingleInstanceMutex.Dispose() } catch {}
+    exit
+}
+
+$script:BaseDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$script:AssetsDir = Join-Path $script:BaseDir 'assets'
+$script:SpriteDir = Join-Path $script:AssetsDir 'tanya'
+$script:BankFile = Join-Path $script:BaseDir 'data\daily_bank.json'
+$script:ConfigFile = Join-Path $script:BaseDir 'config.json'
+$script:UserRoot = Join-Path $env:LOCALAPPDATA 'Aislinn English Daily'
+$script:UserData = Join-Path $script:UserRoot 'data'
+$script:SettingsFile = Join-Path $script:UserData 'settings.json'
+$script:ProgressFile = Join-Path $script:UserData 'progress.json'
+New-Item -ItemType Directory -Force -Path $script:UserData | Out-Null
+
+function Read-JsonFile([string]$Path, $Default){
+    try{ if(Test-Path $Path){ return (Get-Content -Raw -Encoding UTF8 $Path | ConvertFrom-Json) } }catch{}
+    return $Default
+}
+
+$script:Config = Read-JsonFile $script:ConfigFile ([pscustomobject]@{preferred_models=@('qwen3:14b','qwen3:8b','qwen3:4b');ollama_host='http://127.0.0.1:11434';ai_timeout_seconds=150;voice_rate=0})
+$script:OllamaHost = 'http://127.0.0.1:11434'
+$script:AiTimeoutMs = [Math]::Max(5000, ([int]$script:Config.ai_timeout_seconds * 1000))
+$script:PreferredModels = @($script:Config.preferred_models)
+if($script:PreferredModels.Count -eq 0){ $script:PreferredModels = @('qwen3:14b','qwen3:8b','qwen3:4b','qwen3:1.7b') }
+# Prefer a lighter already-installed model on modest machines; never removes or replaces other models.
+try{$script:RamGB=[Math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory/1GB,1)}catch{$script:RamGB=0}
+if($script:RamGB -gt 0 -and $script:RamGB -lt 8){$script:PreferredModels=@('qwen3:1.7b','qwen3:4b','qwen3:8b','qwen3:14b')}
+elseif($script:RamGB -gt 0 -and $script:RamGB -lt 12){$script:PreferredModels=@('qwen3:4b','qwen3:1.7b','qwen3:8b','qwen3:14b')}
+elseif($script:RamGB -gt 0 -and $script:RamGB -lt 24){$script:PreferredModels=@('qwen3:8b','qwen3:4b','qwen3:14b','qwen3:1.7b')}
+else{$script:PreferredModels=@('qwen3:14b','qwen3:8b','qwen3:4b','qwen3:1.7b')}
+$script:Lessons = @(Read-JsonFile $script:BankFile @())
+$script:Settings = Read-JsonFile $script:SettingsFile ([pscustomobject]@{})
+$script:Progress = Read-JsonFile $script:ProgressFile ([pscustomobject]@{})
+$script:ModelReady = $false
+$script:ModelName = ''
+$script:AiTask = $null
+$script:AiKind = ''
+$script:AiMeta = $null
+$script:ConversationHistory = New-Object System.Collections.Generic.List[object]
+
+Add-Type -TypeDefinition @"
+using System;
+using System.IO;
+using System.Net;
+using System.Text;
+using System.Threading.Tasks;
+public static class AislinnEnglishLoopbackHttp {
+    private static string Request(string method, string url, string body, int timeoutMs) {
+        if (!(url.StartsWith("http://127.0.0.1:") || url.StartsWith("http://localhost:")))
+            throw new InvalidOperationException("Only loopback HTTP is allowed.");
+        var req = (HttpWebRequest)WebRequest.Create(url);
+        req.Method = method;
+        req.Proxy = null;
+        req.Timeout = timeoutMs;
+        req.ReadWriteTimeout = timeoutMs;
+        req.ContentType = "application/json; charset=utf-8";
+        req.Accept = "application/json";
+        if (body != null) {
+            var bytes = Encoding.UTF8.GetBytes(body);
+            req.ContentLength = bytes.Length;
+            using (var stream = req.GetRequestStream()) stream.Write(bytes, 0, bytes.Length);
+        }
+        using (var response = (HttpWebResponse)req.GetResponse())
+        using (var stream = response.GetResponseStream())
+        using (var reader = new StreamReader(stream, Encoding.UTF8))
+            return reader.ReadToEnd();
+    }
+    public static Task<string> GetAsync(string url, int timeoutMs) {
+        return Task.Factory.StartNew(() => Request("GET", url, null, timeoutMs));
+    }
+    public static Task<string> PostJsonAsync(string url, string body, int timeoutMs) {
+        return Task.Factory.StartNew(() => Request("POST", url, body, timeoutMs));
+    }
+}
+"@
+
+$xaml = @'
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Aislinn English Daily V2.0.1" Width="1280" Height="760" MinWidth="1050" MinHeight="680"
+        WindowStartupLocation="CenterScreen" Background="#080B17" FontFamily="Segoe UI" Foreground="#F4F7FF">
+    <Window.Resources>
+        <Style TargetType="Button">
+            <Setter Property="Background" Value="#1A2448"/><Setter Property="Foreground" Value="White"/>
+            <Setter Property="BorderBrush" Value="#38467D"/><Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding" Value="12,8"/><Setter Property="Margin" Value="4"/>
+            <Setter Property="Cursor" Value="Hand"/><Setter Property="FontWeight" Value="SemiBold"/>
+        </Style>
+        <Style TargetType="TextBox">
+            <Setter Property="Background" Value="#0F1530"/><Setter Property="Foreground" Value="#F4F7FF"/>
+            <Setter Property="BorderBrush" Value="#34416D"/><Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding" Value="8"/><Setter Property="CaretBrush" Value="#75F2FF"/>
+        </Style>
+        <Style TargetType="ComboBox">
+            <Setter Property="Background" Value="#121A37"/><Setter Property="Foreground" Value="#101321"/>
+            <Setter Property="Padding" Value="5"/><Setter Property="Margin" Value="0,3,0,8"/>
+        </Style>
+        <Style x:Key="LabelSmall" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="#91A0C9"/><Setter Property="FontSize" Value="11"/>
+            <Setter Property="FontWeight" Value="SemiBold"/><Setter Property="Margin" Value="0,7,0,2"/>
+        </Style>
+        <Style x:Key="Card" TargetType="Border">
+            <Setter Property="Background" Value="#0D132B"/><Setter Property="BorderBrush" Value="#26345D"/>
+            <Setter Property="BorderThickness" Value="1"/><Setter Property="CornerRadius" Value="18"/>
+            <Setter Property="Padding" Value="14"/><Setter Property="Margin" Value="8"/>
+        </Style>
+    </Window.Resources>
+    <Grid>
+        <Grid.RowDefinitions><RowDefinition Height="76"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+        <Border Grid.Row="0" Background="#0C1228" BorderBrush="#26345D" BorderThickness="0,0,0,1">
+            <Grid Margin="18,0">
+                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                <StackPanel VerticalAlignment="Center">
+                    <TextBlock Text="AISLINN ENGLISH DAILY · V2.0.1" FontSize="24" FontWeight="Bold"/>
+                    <TextBlock Text="Speak every day · private local microphone · no Windows speech pack · lightweight 2D" FontSize="12" Foreground="#75F2FF"/>
+                </StackPanel>
+                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                    <Border Background="#111A38" CornerRadius="13" Padding="12,7" Margin="4"><TextBlock x:Name="SpeechStatusText" Text="🎙 Checking private local microphone..." Foreground="#FFD166" FontWeight="SemiBold"/></Border>
+                    <Border Background="#111A38" CornerRadius="13" Padding="12,7" Margin="4"><TextBlock x:Name="ModelStatusText" Text="● Checking local AI..." Foreground="#FFD166" FontWeight="SemiBold"/></Border>
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <Grid Grid.Row="1" Margin="10">
+            <Grid.ColumnDefinitions><ColumnDefinition Width="300"/><ColumnDefinition Width="*"/><ColumnDefinition Width="360"/></Grid.ColumnDefinitions>
+
+            <Border Grid.Column="0" Style="{StaticResource Card}">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel>
+                        <TextBlock Text="YOUR DAILY PRACTICE" FontSize="15" FontWeight="Bold" Foreground="#C6D5FF" Margin="0,0,0,8"/>
+                        <TextBlock Text="Level" Style="{StaticResource LabelSmall}"/>
+                        <ComboBox x:Name="LevelCombo"><ComboBoxItem Content="A1 Beginner"/><ComboBoxItem Content="A2 Elementary"/><ComboBoxItem Content="B1 Intermediate"/><ComboBoxItem Content="B2 Upper-intermediate"/><ComboBoxItem Content="C1 Advanced"/></ComboBox>
+                        <TextBlock Text="Practice mode" Style="{StaticResource LabelSmall}"/>
+                        <ComboBox x:Name="ModeCombo"><ComboBoxItem Content="Daily conversation"/><ComboBoxItem Content="Pronunciation / Shadowing"/><ComboBoxItem Content="Work English"/><ComboBoxItem Content="Customer service"/><ComboBoxItem Content="Job interview"/><ComboBoxItem Content="Travel English"/><ComboBoxItem Content="Vocabulary challenge"/><ComboBoxItem Content="Free conversation"/></ComboBox>
+                        <TextBlock Text="Session length" Style="{StaticResource LabelSmall}"/>
+                        <ComboBox x:Name="MinutesCombo"><ComboBoxItem Content="5 min"/><ComboBoxItem Content="10 min"/><ComboBoxItem Content="15 min"/><ComboBoxItem Content="20 min"/></ComboBox>
+                        <TextBlock Text="Correction style" Style="{StaticResource LabelSmall}"/>
+                        <ComboBox x:Name="CorrectionCombo"><ComboBoxItem Content="Gentle - only important mistakes"/><ComboBoxItem Content="Balanced"/><ComboBoxItem Content="Intensive - correct most mistakes"/></ComboBox>
+                        <TextBlock Text="Your goal (optional)" Style="{StaticResource LabelSmall}"/>
+                        <TextBox x:Name="GoalBox" Height="70" TextWrapping="Wrap" AcceptsReturn="True" ToolTip="Example: Speak more naturally in job interviews"/>
+                        <CheckBox x:Name="VoiceCheck" Content="Teacher speaks responses" IsChecked="True" Foreground="#DCE5FF" Margin="0,8,0,3"/>
+                        <CheckBox x:Name="AutoSendVoiceCheck" Content="Send recognized speech automatically" IsChecked="True" Foreground="#DCE5FF" Margin="0,3,0,8"/>
+                        <Button x:Name="StartSessionButton" Content="▶ Start today's session" Background="#17694E" BorderBrush="#38D99B"/>
+                        <Button x:Name="NewPromptButton" Content="✨ Give me a new prompt" Background="#433089" BorderBrush="#7B64D7"/>
+                        <Separator Margin="0,8" Background="#26345D"/>
+                        <TextBlock Text="TODAY" FontSize="12" FontWeight="Bold" Foreground="#A8B6DE" Margin="0,8,0,2"/>
+                        <TextBlock x:Name="DailyTopicText" Text="Topic" FontSize="17" FontWeight="Bold" TextWrapping="Wrap"/>
+                        <TextBlock x:Name="DailyGoalText" Text="Goal" Foreground="#AAB7D9" TextWrapping="Wrap" Margin="0,4,0,8"/>
+                        <TextBlock Text="Useful phrases" Style="{StaticResource LabelSmall}"/>
+                        <TextBlock x:Name="PhrasesText" Text="-" Foreground="#DCE5FF" TextWrapping="Wrap"/>
+                    </StackPanel>
+                </ScrollViewer>
+            </Border>
+
+            <Grid Grid.Column="1">
+                <Grid.RowDefinitions><RowDefinition Height="*"/><RowDefinition Height="210"/></Grid.RowDefinitions>
+                <Border Grid.Row="0" Style="{StaticResource Card}">
+                    <Grid>
+                        <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+                        <Grid Grid.Row="0">
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                            <StackPanel>
+                                <TextBlock Text="CONVERSATION" FontSize="13" FontWeight="Bold" Foreground="#C9D7FF"/>
+                                <TextBlock x:Name="SessionStatusText" Text="Not started" Foreground="#91A0C9"/>
+                            </StackPanel>
+                            <TextBlock x:Name="SessionTimerText" Grid.Column="1" Text="10:00" FontSize="30" FontWeight="Bold" Foreground="#75F2FF"/>
+                        </Grid>
+                        <Border Grid.Row="1" Background="#101938" CornerRadius="14" Padding="12" Margin="0,10,0,8">
+                            <TextBlock x:Name="TeacherPromptText" Text="Press Start today's session and I will begin in English." TextWrapping="Wrap" FontSize="15" Foreground="#EEF3FF"/>
+                        </Border>
+                        <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto" Background="#090E21" Margin="0,0,0,8">
+                            <TextBlock x:Name="ConversationText" Text="Your conversation will appear here." TextWrapping="Wrap" Foreground="#D7DEF4" Padding="12"/>
+                        </ScrollViewer>
+                        <Grid Grid.Row="3" Margin="0,2,0,4">
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                            <TextBox x:Name="UserTextBox" Height="44" VerticalContentAlignment="Center" ToolTip="Type in English if you prefer"/>
+                            <Button x:Name="SendButton" Grid.Column="1" Content="Send" Width="76" Background="#433089" BorderBrush="#7B64D7"/>
+                            <Button x:Name="PrepareMicButton" Grid.Column="2" Content="PREPARE LOCAL MIC" Width="150" Background="#79520E" BorderBrush="#FFD166" IsEnabled="True"/>
+                            <Button x:Name="TestMicButton" Grid.Column="3" Content="TEST MIC" Width="92" Background="#2B536B" BorderBrush="#58C7E8" IsEnabled="True"/>
+                            <Button x:Name="MicButton" Grid.Column="4" Content="🎙 Speak" Width="96" Background="#164F70" BorderBrush="#34C6E8" IsEnabled="True"/>
+                        </Grid>
+                        <TextBlock Grid.Row="4" x:Name="HeardText" Text="Microphone: checking private local engine..." Foreground="#91A0C9" FontSize="11" TextWrapping="Wrap"/>
+                    </Grid>
+                </Border>
+
+                <Border Grid.Row="1" Style="{StaticResource Card}">
+                    <Grid>
+                        <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+                        <TextBlock Text="COACHING FEEDBACK" FontSize="13" FontWeight="Bold" Foreground="#C9D7FF"/>
+                        <Grid Grid.Row="1" Margin="0,8,0,4">
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="1.1*"/><ColumnDefinition Width="1.4*"/></Grid.ColumnDefinitions>
+                            <Border Background="#0A1025" CornerRadius="12" Padding="10" Margin="0,0,5,0"><StackPanel><TextBlock Text="Better English" Foreground="#75F2FF" FontWeight="Bold"/><TextBlock x:Name="CorrectionText" Text="No correction yet." TextWrapping="Wrap" Margin="0,5,0,0"/></StackPanel></Border>
+                            <Border Grid.Column="1" Background="#0A1025" CornerRadius="12" Padding="10" Margin="5,0,0,0"><StackPanel><TextBlock Text="Why / Pronunciation tip" Foreground="#FFD166" FontWeight="Bold"/><TextBlock x:Name="ExplanationText" Text="I will explain important corrections briefly in Spanish." TextWrapping="Wrap" Margin="0,5,0,0"/></StackPanel></Border>
+                        </Grid>
+                        <Grid Grid.Row="2"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                            <TextBlock x:Name="NewWordsText" Text="New words: -" Foreground="#B7C4E8" TextWrapping="Wrap"/>
+                            <TextBlock x:Name="TurnScoreText" Grid.Column="1" Text="--/100" Foreground="#7CF2B0" FontSize="18" FontWeight="Bold"/>
+                        </Grid>
+                    </Grid>
+                </Border>
+            </Grid>
+
+            <Border Grid.Column="2" Style="{StaticResource Card}" Background="#0A1025">
+                <Grid>
+                    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+                    <Grid Grid.Row="0"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                        <StackPanel><TextBlock Text="AISLINN" FontSize="17" FontWeight="Bold"/><TextBlock Text="Your local English coach" Foreground="#75F2FF" FontSize="11"/></StackPanel>
+                        <Border Grid.Column="1" Background="#151F43" CornerRadius="12" Padding="10,5"><TextBlock x:Name="MouthLabel" Text="idle" Foreground="#B6C6F4" FontSize="10"/></Border>
+                    </Grid>
+                    <Border Grid.Row="1" Background="#060A16" CornerRadius="18" Margin="0,10" BorderBrush="#283D69" BorderThickness="1" ClipToBounds="True">
+                        <Image x:Name="AvatarImage" Stretch="Uniform" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                    </Border>
+                    <Border Grid.Row="2" Background="#101938" CornerRadius="14" Padding="12" Margin="0,0,0,8">
+                        <TextBlock x:Name="SubtitleText" Text="Hi! I'm ready to practice English with you." TextWrapping="Wrap" FontSize="13" Foreground="#EEF3FF" TextAlignment="Center"/>
+                    </Border>
+                    <StackPanel Grid.Row="3">
+                        <Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                            <TextBlock x:Name="StreakText" Text="🔥 0 day streak" Foreground="#FFD166" FontWeight="Bold"/>
+                            <TextBlock x:Name="XPText" Grid.Column="1" Text="0 XP" Foreground="#75F2FF" FontWeight="Bold"/>
+                        </Grid>
+                        <ProgressBar x:Name="XPBar" Minimum="0" Maximum="100" Value="0" Height="10" Margin="0,7,0,6"/>
+                        <TextBlock x:Name="RewardText" Text="Speak one sentence to begin ✨" Foreground="#DDA6FF" TextAlignment="Center" FontWeight="SemiBold" TextWrapping="Wrap"/>
+                    </StackPanel>
+                </Grid>
+            </Border>
+        </Grid>
+    </Grid>
+</Window>
+'@
+
+$reader = New-Object System.Xml.XmlNodeReader ([xml]$xaml)
+$script:Window = [Windows.Markup.XamlReader]::Load($reader)
+$names = @('SpeechStatusText','ModelStatusText','LevelCombo','ModeCombo','MinutesCombo','CorrectionCombo','GoalBox','VoiceCheck','AutoSendVoiceCheck','StartSessionButton','NewPromptButton','DailyTopicText','DailyGoalText','PhrasesText','SessionStatusText','SessionTimerText','TeacherPromptText','ConversationText','UserTextBox','SendButton','PrepareMicButton','TestMicButton','MicButton','HeardText','CorrectionText','ExplanationText','NewWordsText','TurnScoreText','AvatarImage','MouthLabel','SubtitleText','StreakText','XPText','XPBar','RewardText')
+foreach($n in $names){ Set-Variable -Scope Script -Name $n -Value $script:Window.FindName($n) }
+
+function New-Bitmap([string]$Path){
+    $bmp = New-Object System.Windows.Media.Imaging.BitmapImage
+    $bmp.BeginInit(); $bmp.CacheOption=[System.Windows.Media.Imaging.BitmapCacheOption]::OnLoad
+    $bmp.UriSource=New-Object System.Uri -ArgumentList $Path, ([System.UriKind]::Absolute); $bmp.EndInit(); $bmp.Freeze(); return $bmp
+}
+$script:Frames=@{}
+$frameFiles=@{normal='profesora_normal.png';parpadeo='profesora_parpadeo.png';hablando1='profesora_hablando1.png';hablando2='profesora_hablando2.png';A='profesora_A.png';E='profesora_E.png';I='profesora_I.png';O='profesora_O.png';F='profesora_F.png';M='profesora_M.png'}
+foreach($k in $frameFiles.Keys){ $script:Frames[$k]=New-Bitmap (Join-Path $script:SpriteDir $frameFiles[$k]) }
+function Set-Frame([string]$Name){
+    if(-not $script:Frames.ContainsKey($Name)){ $Name='normal' }
+    $script:AvatarImage.Source=$script:Frames[$Name]
+    $script:MouthLabel.Text=if($Name -in @('A','E','I','O','F','M')){"mouth: $Name"}elseif($Name -like 'hablando*'){'speaking'}else{$Name}
+}
+Set-Frame 'normal'
+
+# English TTS through installed Windows voices. Speech is optional: the UI must still open if System.Speech is unavailable.
+$script:Synth = $null
+if($script:TtsAssemblyReady){
+    try{
+        $script:Synth = New-Object System.Speech.Synthesis.SpeechSynthesizer
+        $voices=@($script:Synth.GetInstalledVoices() | Where-Object {$_.Enabled})
+        $english=$voices | Where-Object {$_.VoiceInfo.Culture.Name -like 'en-*'} | Select-Object -First 1
+        if($english){$script:Synth.SelectVoice($english.VoiceInfo.Name)}
+        try{$script:Synth.Rate=[int]$script:Config.voice_rate}catch{$script:Synth.Rate=0}
+        $script:Synth.Volume=100
+    }catch{$script:Synth=$null}
+}
+$script:VisemeQueue=New-Object System.Collections.Generic.Queue[string]
+$script:Speaking=$false; $script:SpeechTicks=0; $script:BlinkCounter=0; $script:BlinkHold=0
+
+function Convert-ToSimple([string]$Text){
+    if([string]::IsNullOrWhiteSpace($Text)){return ''}
+    $norm=$Text.Normalize([System.Text.NormalizationForm]::FormD); $sb=New-Object System.Text.StringBuilder
+    foreach($ch in $norm.ToCharArray()){$cat=[System.Globalization.CharUnicodeInfo]::GetUnicodeCategory($ch);if($cat -ne [System.Globalization.UnicodeCategory]::NonSpacingMark){[void]$sb.Append([char]::ToLowerInvariant($ch))}}
+    return $sb.ToString()
+}
+function Build-Visemes([string]$Text){
+    $script:VisemeQueue.Clear(); $simple=Convert-ToSimple $Text; $count=0
+    foreach($ch in $simple.ToCharArray()){
+        $frame=switch -Regex ([string]$ch){'a'{'A';break};'e'{'E';break};'[iy]'{'I';break};'[ouw]'{'O';break};'[fv]'{'F';break};'[mbp]'{'M';break};'[szctdnrljgkqx]'{'hablando2';break};'\s'{'normal';break};default{'hablando1'}}
+        if($frame -ne 'normal' -or ($count%3 -eq 0)){$script:VisemeQueue.Enqueue($frame)}; $count++; if($script:VisemeQueue.Count -ge 900){break}
+    }
+    if($script:VisemeQueue.Count -eq 0){$script:VisemeQueue.Enqueue('hablando1')}
+}
+function Speak-Teacher([string]$Text){
+    $clean=(($Text -replace '\s+',' ').Trim()); if([string]::IsNullOrWhiteSpace($clean)){return}
+    $script:SubtitleText.Text=$clean
+    if(-not $script:VoiceCheck.IsChecked -or $null -eq $script:Synth){return}
+    try{ Stop-Listening; $script:Synth.SpeakAsyncCancelAll(); Build-Visemes $clean; $script:Speaking=$true; $script:SpeechTicks=0; [void]$script:Synth.SpeakAsync($clean) }catch{$script:Speaking=$false;Set-Frame 'normal'}
+}
+$script:FaceTimer=New-Object System.Windows.Threading.DispatcherTimer; $script:FaceTimer.Interval=[TimeSpan]::FromMilliseconds(95)
+$script:FaceTimer.Add_Tick({
+    if($script:Speaking){
+        $script:SpeechTicks++
+        if($script:SpeechTicks -gt 3 -and ($null -eq $script:Synth -or $script:Synth.State -ne [System.Speech.Synthesis.SynthesizerState]::Speaking)){$script:Speaking=$false;$script:VisemeQueue.Clear();Set-Frame 'normal'}
+        elseif($script:VisemeQueue.Count -gt 0){Set-Frame ($script:VisemeQueue.Dequeue())}
+        else{Set-Frame ($(if((Get-Random -Minimum 0 -Maximum 2)-eq 0){'hablando1'}else{'hablando2'}))}
+    }else{
+        if($script:BlinkHold -gt 0){$script:BlinkHold--;if($script:BlinkHold -eq 0){Set-Frame 'normal'}}else{$script:BlinkCounter++;if($script:BlinkCounter -gt (Get-Random -Minimum 35 -Maximum 65)){$script:BlinkCounter=0;$script:BlinkHold=2;Set-Frame 'parpadeo'}}
+    }
+}); $script:FaceTimer.Start()
+
+function Get-ComboText($Combo){if($null -eq $Combo.SelectedItem){return ''};return [string]$Combo.SelectedItem.Content}
+function Safe-Int([string]$Text,[int]$Default,[int]$Min,[int]$Max){$v=0;if(-not [int]::TryParse($Text,[ref]$v)){$v=$Default};return [Math]::Min($Max,[Math]::Max($Min,$v))}
+function Level-Code{ $s=Get-ComboText $script:LevelCombo; if($s -match '^(A1|A2|B1|B2|C1)'){return $Matches[1]}; return 'B1' }
+function Session-Minutes{ $s=Get-ComboText $script:MinutesCombo; return Safe-Int (($s -replace '[^0-9]','')) 10 5 20 }
+
+function Get-TodayLesson{
+    if($script:Lessons.Count -eq 0){return [pscustomobject]@{day=1;topic='Daily conversation';goal='Speak for a few minutes in English.';phrases=@('Tell me more.','In my opinion...','What about you?');starter_prompt='How has your day been?';shadow_phrase='I am practicing English a little every day.'}}
+    $index=(([int](Get-Date).DayOfYear-1) % $script:Lessons.Count); return $script:Lessons[$index]
+}
+$script:TodayLesson=Get-TodayLesson
+function Refresh-DailyLesson{
+    $script:TodayLesson=Get-TodayLesson
+    $script:DailyTopicText.Text=[string]$script:TodayLesson.topic
+    $script:DailyGoalText.Text=[string]$script:TodayLesson.goal
+    $script:PhrasesText.Text=(@($script:TodayLesson.phrases) | ForEach-Object{"• $_"}) -join [Environment]::NewLine
+}
+
+# Progress, streak and session state.
+$script:XP=0; $script:Streak=0; $script:LastPracticeDate=''
+try{$script:XP=[int]$script:Progress.xp}catch{}
+try{$script:Streak=[int]$script:Progress.streak}catch{}
+try{$script:LastPracticeDate=[string]$script:Progress.last_practice_date}catch{}
+function Update-ProgressUI{$script:XPText.Text="$($script:XP) XP";$script:XPBar.Value=($script:XP%100);$script:StreakText.Text="🔥 $($script:Streak) day streak"}
+function Award-XP([int]$Points,[string]$Message){$script:XP+=$Points;Update-ProgressUI;$script:RewardText.Text="✨ +$Points XP · $Message";try{[System.Media.SystemSounds]::Asterisk.Play()}catch{}}
+Update-ProgressUI
+
+$script:SessionActive=$false; $script:SessionRemaining=600; $script:Turns=0; $script:Listening=$false
+$script:SessionTimer=New-Object System.Windows.Threading.DispatcherTimer; $script:SessionTimer.Interval=[TimeSpan]::FromSeconds(1)
+$script:SessionTimer.Add_Tick({
+    if(-not $script:SessionActive){return}; $script:SessionRemaining--
+    if($script:SessionRemaining -lt 0){$script:SessionRemaining=0}
+    $m=[Math]::Floor($script:SessionRemaining/60);$s=$script:SessionRemaining%60;$script:SessionTimerText.Text=('{0:00}:{1:00}' -f $m,$s)
+    if($script:SessionRemaining -le 0){ Complete-Session }
+});$script:SessionTimer.Start()
+
+function Complete-Session{
+    if(-not $script:SessionActive){return};$script:SessionActive=$false
+    $today=(Get-Date).ToString('yyyy-MM-dd');$yesterday=(Get-Date).AddDays(-1).ToString('yyyy-MM-dd')
+    if($script:LastPracticeDate -ne $today){if($script:LastPracticeDate -eq $yesterday){$script:Streak++}else{$script:Streak=1};$script:LastPracticeDate=$today}
+    Award-XP (30+[Math]::Min(30,$script:Turns*2)) 'Daily session complete!'
+    $script:SessionStatusText.Text="Completed · $($script:Turns) speaking turns";$script:TeacherPromptText.Text='Great work today. Consistency matters more than perfection.'
+    Speak-Teacher 'Great work today. Consistency matters more than perfection. See you tomorrow for another short practice.'
+    Save-State
+}
+
+# Private local microphone engine V2.0.
+# Recognition uses whisper.cpp from app\runtime and a tiny English model from app\models.
+# It never installs Windows language/speech capabilities, never changes audio devices and never requests administrator rights.
+$script:MicProcess=$null
+$script:MicOutputFile=''
+$script:MicCancelFile=''
+$script:MicTestOnly=$false
+$script:Listening=$false
+$script:MicHelper=Join-Path $script:BaseDir 'LocalWhisperCapture.ps1'
+$script:MicPrepareHelper=Join-Path $script:BaseDir 'PrepareLocalSpeech.ps1'
+$script:WhisperRuntimeDir=Join-Path $script:BaseDir 'runtime\whisper'
+$script:WhisperModel=Join-Path $script:BaseDir 'models\ggml-tiny.en-q5_1.bin'
+$script:WhisperExe=''
+$script:PrepareProcess=$null
+$script:PrepareResultFile=''
+
+$script:MicPollTimer=New-Object System.Windows.Threading.DispatcherTimer
+$script:MicPollTimer.Interval=[TimeSpan]::FromMilliseconds(150)
+$script:PreparePollTimer=New-Object System.Windows.Threading.DispatcherTimer
+$script:PreparePollTimer.Interval=[TimeSpan]::FromMilliseconds(250)
+
+function Set-SpeechStatus([string]$Text,[string]$Color='#FFD166'){
+    if($script:SpeechStatusText){$script:SpeechStatusText.Text=$Text;$script:SpeechStatusText.Foreground=$Color}
+}
+
+function Reset-MicButtons{
+    $script:Listening=$false
+    if($script:MicButton){$script:MicButton.IsEnabled=$true;$script:MicButton.Content='🎙 Speak';$script:MicButton.Background='#164F70'}
+    if($script:TestMicButton){$script:TestMicButton.IsEnabled=$true;$script:TestMicButton.Content='TEST MIC'}
+}
+
+function Get-WhisperStreamPath{
+    if(-not [string]::IsNullOrWhiteSpace($script:WhisperExe) -and (Test-Path -LiteralPath $script:WhisperExe)){return $script:WhisperExe}
+    if(-not (Test-Path -LiteralPath $script:WhisperRuntimeDir)){return ''}
+    try{
+        $item=Get-ChildItem -LiteralPath $script:WhisperRuntimeDir -Filter 'whisper-stream.exe' -File -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+        if($item){$script:WhisperExe=$item.FullName;return $script:WhisperExe}
+    }catch{}
+    return ''
+}
+
+function Test-LocalMicReady{
+    $exe=Get-WhisperStreamPath
+    return ((-not [string]::IsNullOrWhiteSpace($exe)) -and (Test-Path -LiteralPath $script:WhisperModel) -and (Test-Path -LiteralPath $script:MicHelper))
+}
+
+function Initialize-LocalMic{
+    Reset-MicButtons
+    if(Test-LocalMicReady){
+        $script:PrepareMicButton.Visibility=[System.Windows.Visibility]::Collapsed
+        Set-SpeechStatus '🎙 Private local mic ready · TEST MIC or Speak' '#7CF2B0'
+        $script:HeardText.Text='Private offline speech recognition is ready. It does not use a Windows speech pack.'
+        return $true
+    }
+    $script:PrepareMicButton.Visibility=[System.Windows.Visibility]::Visible
+    Set-SpeechStatus '🎙 Local mic engine needs one-time preparation' '#FFD166'
+    $script:HeardText.Text='Click PREPARE LOCAL MIC once. It downloads a private ~34 MB speech engine into this Aislinn folder only.'
+    return $false
+}
+
+function Finish-LocalMicPreparation{
+    try{$script:PreparePollTimer.Stop()}catch{}
+    $result=$null
+    try{
+        if(Test-Path -LiteralPath $script:PrepareResultFile){
+            $raw=Get-Content -LiteralPath $script:PrepareResultFile -Raw -Encoding UTF8
+            if(-not [string]::IsNullOrWhiteSpace($raw)){$result=$raw|ConvertFrom-Json}
+        }
+    }catch{}
+    try{if(Test-Path -LiteralPath $script:PrepareResultFile){Remove-Item -LiteralPath $script:PrepareResultFile -Force}}catch{}
+    $script:PrepareProcess=$null
+    $script:PrepareMicButton.IsEnabled=$true
+    $script:PrepareMicButton.Content='PREPARE LOCAL MIC'
+    if($result -and [string]$result.status -eq 'success' -and (Test-LocalMicReady)){
+        Initialize-LocalMic|Out-Null
+        try{[System.Windows.MessageBox]::Show('Private local microphone recognition is ready. No Windows speech pack was installed and no audio setting was changed. Click TEST MIC and speak one sentence, then pause.','Aislinn English Daily V2.0.1','OK','Information')|Out-Null}catch{}
+        return
+    }
+    $msg='The private microphone engine could not be prepared.'
+    try{if($result -and $result.message){$msg=[string]$result.message}}catch{}
+    $script:HeardText.Text=$msg
+    Set-SpeechStatus '🎙 Local mic preparation failed · typing still works' '#FF9A9A'
+    try{[System.Windows.MessageBox]::Show($msg,'Aislinn English Daily V2.0.1','OK','Warning')|Out-Null}catch{}
+}
+
+$script:PreparePollTimer.Add_Tick({
+    if($script:PrepareProcess){
+        $done=$false
+        try{$done=$script:PrepareProcess.HasExited}catch{$done=$true}
+        if($done){Finish-LocalMicPreparation}
+    }
+})
+
+function Prepare-LocalMic{
+    if(Test-LocalMicReady){Initialize-LocalMic|Out-Null;return}
+    if(-not (Test-Path -LiteralPath $script:MicPrepareHelper)){
+        $script:HeardText.Text='PrepareLocalSpeech.ps1 is missing. Re-extract the complete V2.0 ZIP.'
+        Set-SpeechStatus '🎙 Preparation helper missing' '#FF9A9A'
+        return
+    }
+    $answer=[System.Windows.MessageBox]::Show('Aislinn will download its own private CPU speech-recognition engine and a small English model (about 34 MB total). Files stay inside this Aislinn folder. No administrator permission, Windows language pack, driver change, PATH change, registry change, microphone change or Ollama change is performed. Internet is needed only for this one-time download. Continue?','Prepare private local microphone','YesNo','Question')
+    if($answer -ne [System.Windows.MessageBoxResult]::Yes){return}
+    try{
+        $script:PrepareResultFile=Join-Path $env:TEMP ('AislinnLocalMicSetup_'+[Guid]::NewGuid().ToString('N')+'.json')
+        $psExe=Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+        if(-not (Test-Path -LiteralPath $psExe)){throw 'Windows PowerShell 5.1 was not found.'}
+        $psi=New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName=$psExe
+        $psi.UseShellExecute=$false
+        $psi.CreateNoWindow=$true
+        $psi.WindowStyle=[System.Diagnostics.ProcessWindowStyle]::Hidden
+        $psi.Arguments='-NoLogo -NoProfile -ExecutionPolicy Bypass -File "'+$script:MicPrepareHelper+'" -Root "'+$script:BaseDir+'" -ResultFile "'+$script:PrepareResultFile+'"'
+        $script:PrepareProcess=New-Object System.Diagnostics.Process
+        $script:PrepareProcess.StartInfo=$psi
+        if(-not $script:PrepareProcess.Start()){throw 'The private microphone preparation process could not start.'}
+        $script:PrepareMicButton.IsEnabled=$false
+        $script:PrepareMicButton.Content='PREPARING...'
+        Set-SpeechStatus '🎙 Preparing private local mic · downloading once...' '#FFD166'
+        $script:HeardText.Text='Downloading and verifying the private speech engine. Aislinn remains isolated from Windows audio configuration.'
+        $script:PreparePollTimer.Start()
+    }catch{
+        $script:PrepareProcess=$null
+        $script:PrepareMicButton.IsEnabled=$true
+        $script:PrepareMicButton.Content='PREPARE LOCAL MIC'
+        $script:HeardText.Text=('Preparation could not start: '+$_.Exception.Message)
+        Set-SpeechStatus '🎙 Local mic preparation could not start' '#FF9A9A'
+    }
+}
+
+function Stop-Listening{
+    if($script:Listening -and -not [string]::IsNullOrWhiteSpace($script:MicCancelFile)){
+        try{'cancel'|Set-Content -LiteralPath $script:MicCancelFile -Encoding ASCII -Force}catch{}
+    }
+    try{$script:MicPollTimer.Stop()}catch{}
+    Reset-MicButtons
+    Set-SpeechStatus '🎙 Private local mic ready · TEST MIC or Speak' '#7CF2B0'
+}
+
+function Finish-MicrophoneCapture{
+    try{$script:MicPollTimer.Stop()}catch{}
+    $exitCode=-1
+    try{if($script:MicProcess){$exitCode=$script:MicProcess.ExitCode}}catch{}
+    $result=$null
+    try{
+        if(Test-Path -LiteralPath $script:MicOutputFile){
+            $raw=Get-Content -LiteralPath $script:MicOutputFile -Raw -Encoding UTF8
+            if(-not [string]::IsNullOrWhiteSpace($raw)){$result=$raw|ConvertFrom-Json}
+        }
+    }catch{}
+    try{if(Test-Path -LiteralPath $script:MicOutputFile){Remove-Item -LiteralPath $script:MicOutputFile -Force}}catch{}
+    try{if(Test-Path -LiteralPath $script:MicCancelFile){Remove-Item -LiteralPath $script:MicCancelFile -Force}}catch{}
+    $wasTest=$script:MicTestOnly
+    $script:MicProcess=$null
+    Reset-MicButtons
+
+    if($null -eq $result){
+        $script:HeardText.Text='The private microphone helper returned no result. Click TEST MIC and try again.'
+        Set-SpeechStatus '🎙 Local microphone test needs another try' '#FF9A9A'
+        return
+    }
+
+    $status=[string]$result.status
+    if($status -eq 'success'){
+        $text=[string]$result.text
+        $conf=0.90
+        try{if($null -ne $result.confidence){$conf=[double]$result.confidence}}catch{}
+        $script:UserTextBox.Text=$text
+        $script:HeardText.Text=('I heard: "'+$text+'" · private offline recognition')
+        Set-SpeechStatus '🎙 Private local microphone working' '#7CF2B0'
+        if($wasTest){
+            try{[System.Windows.MessageBox]::Show(('Microphone OK.`n`nI heard: "'+$text+'"'),'Aislinn English Daily V2.0.1 - Local microphone test','OK','Information')|Out-Null}catch{}
+        }elseif($script:AutoSendVoiceCheck.IsChecked -and -not [string]::IsNullOrWhiteSpace($text)){
+            Handle-UserTurn $text $conf
+        }
+        return
+    }
+
+    $message=[string]$result.message
+    if([string]::IsNullOrWhiteSpace($message)){$message='No sentence was recognized.'}
+    switch($status){
+        'not_prepared' {
+            $script:PrepareMicButton.Visibility=[System.Windows.Visibility]::Visible
+            $script:HeardText.Text='The private microphone engine is not prepared yet. Click PREPARE LOCAL MIC.'
+            Set-SpeechStatus '🎙 Prepare private local mic once' '#FFD166'
+        }
+        'no_result' {
+            $script:HeardText.Text='The microphone opened but no complete English sentence was detected. Speak one sentence, then pause.'
+            Set-SpeechStatus '🎙 No sentence detected · try again' '#FFD166'
+        }
+        'cancelled' {
+            $script:HeardText.Text='Listening stopped.'
+            Set-SpeechStatus '🎙 Listening stopped · ready again' '#7CF2B0'
+        }
+        'device_error' {
+            $script:HeardText.Text=('The private engine could not open the default input device: '+$message)
+            Set-SpeechStatus '🎙 Default microphone could not be opened' '#FF9A9A'
+        }
+        default {
+            $script:HeardText.Text=('Local microphone error: '+$message)
+            Set-SpeechStatus '🎙 Local microphone needs attention · typing still works' '#FF9A9A'
+        }
+    }
+    if($wasTest -and $status -ne 'cancelled'){
+        try{[System.Windows.MessageBox]::Show($script:HeardText.Text,'Aislinn English Daily V2.0.1 - Local microphone test','OK','Warning')|Out-Null}catch{}
+    }
+}
+
+$script:MicPollTimer.Add_Tick({
+    if($script:MicProcess){
+        $done=$false
+        try{$done=$script:MicProcess.HasExited}catch{$done=$true}
+        if($done){Finish-MicrophoneCapture}
+    }
+})
+
+function Start-MicrophoneCapture([bool]$TestOnly){
+    if($script:Listening){Stop-Listening;return}
+    if(-not (Test-LocalMicReady)){
+        Initialize-LocalMic|Out-Null
+        Prepare-LocalMic
+        return
+    }
+    if(-not (Test-Path -LiteralPath $script:MicHelper)){
+        $script:HeardText.Text='LocalWhisperCapture.ps1 is missing. Re-extract the complete V2.0 ZIP.'
+        Set-SpeechStatus '🎙 Local microphone helper missing' '#FF9A9A'
+        Reset-MicButtons
+        return
+    }
+    try{
+        if($script:Synth){$script:Synth.SpeakAsyncCancelAll()}
+        $script:Speaking=$false
+        Set-Frame 'normal'
+        $script:MicTestOnly=$TestOnly
+        $script:MicOutputFile=Join-Path $env:TEMP ('AislinnLocalMic_'+[Guid]::NewGuid().ToString('N')+'.json')
+        $script:MicCancelFile=Join-Path $env:TEMP ('AislinnLocalMicCancel_'+[Guid]::NewGuid().ToString('N')+'.flag')
+        $psExe=Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+        if(-not (Test-Path -LiteralPath $psExe)){throw 'Windows PowerShell 5.1 was not found.'}
+        $psi=New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName=$psExe
+        $psi.UseShellExecute=$false
+        $psi.CreateNoWindow=$true
+        $psi.WindowStyle=[System.Diagnostics.ProcessWindowStyle]::Hidden
+        $psi.Arguments='-NoLogo -NoProfile -ExecutionPolicy Bypass -File "'+$script:MicHelper+'" -Root "'+$script:BaseDir+'" -OutputFile "'+$script:MicOutputFile+'" -CancelFile "'+$script:MicCancelFile+'" -TimeoutSeconds 14'
+        $script:MicProcess=New-Object System.Diagnostics.Process
+        $script:MicProcess.StartInfo=$psi
+        if(-not $script:MicProcess.Start()){throw 'The local microphone helper process could not start.'}
+        $script:Listening=$true
+        $script:MicButton.IsEnabled=$true
+        $script:TestMicButton.IsEnabled=$true
+        $script:MicButton.Content='■ Stop'
+        if($TestOnly){$script:TestMicButton.Content='■ STOP TEST'}
+        $script:HeardText.Text=$(if($TestOnly){'Testing private microphone... say: Hello, my name is Alex. Then pause.'}else{'Listening locally... speak one complete English sentence, then pause.'})
+        Set-SpeechStatus '🎙 Listening locally · speak, then pause...' '#7CF2B0'
+        $script:MicPollTimer.Start()
+    }catch{
+        $script:MicProcess=$null
+        Reset-MicButtons
+        $script:HeardText.Text=('Could not start private microphone recognition: '+$_.Exception.Message)
+        Set-SpeechStatus '🎙 Local microphone could not start · retry available' '#FF9A9A'
+    }
+}
+
+function Start-Listening{Start-MicrophoneCapture $false}
+function Test-Microphone{Start-MicrophoneCapture $true}
+
+
+# V2.0.1 microphone bridge patch.
+# The standalone local Whisper test already proved capture works on the PC.
+# This bridge deliberately waits for ONE helper result and then imports it on
+# the WPF thread, avoiding the previous polling race. It never changes Windows audio.
+
+function Read-LocalMicResult([string]$OutputFile){
+    if([string]::IsNullOrWhiteSpace($OutputFile)){return $null}
+    for($i=0;$i -lt 15;$i++){
+        if(Test-Path -LiteralPath $OutputFile){
+            try{
+                $raw=Get-Content -LiteralPath $OutputFile -Raw -Encoding UTF8
+                if(-not [string]::IsNullOrWhiteSpace($raw)){
+                    return ($raw | ConvertFrom-Json)
+                }
+            }catch{}
+        }
+        Start-Sleep -Milliseconds 100
+    }
+    return $null
+}
+
+function Invoke-LocalMicBlocking([bool]$TestOnly){
+    if(-not (Test-LocalMicReady)){
+        Initialize-LocalMic | Out-Null
+        Prepare-LocalMic
+        return
+    }
+
+    $outputFile=''
+    $cancelFile=''
+    try{
+        # Release only Aislinn's own TTS playback before opening the microphone.
+        try{if($script:Synth){$script:Synth.SpeakAsyncCancelAll()}}catch{}
+        $script:Speaking=$false
+        Set-Frame 'normal'
+
+        $outputFile=Join-Path $env:TEMP ('AislinnLocalMicBridge_'+[Guid]::NewGuid().ToString('N')+'.json')
+        $cancelFile=Join-Path $env:TEMP ('AislinnLocalMicBridgeCancel_'+[Guid]::NewGuid().ToString('N')+'.flag')
+        $psExe=Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+        if(-not (Test-Path -LiteralPath $psExe)){throw 'Windows PowerShell 5.1 was not found.'}
+
+        $script:MicButton.IsEnabled=$false
+        $script:TestMicButton.IsEnabled=$false
+        $script:MicButton.Content='LISTENING...'
+        if($TestOnly){$script:TestMicButton.Content='LISTENING...'}
+        $script:HeardText.Text='Listening locally... speak one complete English sentence, then pause.'
+        Set-SpeechStatus 'Local Whisper is listening - speak, then pause...' '#7CF2B0'
+
+        # Force the status change to render before the short blocking capture.
+        try{
+            $script:Window.Dispatcher.Invoke(
+                [Action]{},
+                [System.Windows.Threading.DispatcherPriority]::Render
+            )
+        }catch{}
+
+        $argList=@(
+            '-NoLogo',
+            '-NoProfile',
+            '-ExecutionPolicy','Bypass',
+            '-File',('"' + $script:MicHelper + '"'),
+            '-Root',('"' + $script:BaseDir + '"'),
+            '-OutputFile',('"' + $outputFile + '"'),
+            '-CancelFile',('"' + $cancelFile + '"'),
+            '-TimeoutSeconds','12'
+        )
+        $proc=Start-Process -FilePath $psExe -ArgumentList $argList -PassThru -Wait -WindowStyle Hidden
+        $result=Read-LocalMicResult $outputFile
+
+        if($null -eq $result){
+            $script:HeardText.Text='Local Whisper finished, but Aislinn could not import the transcript. Please try once more.'
+            Set-SpeechStatus 'Microphone result was not imported - retry available' '#FF9A9A'
+            return
+        }
+
+        $status=[string]$result.status
+        if($status -eq 'success'){
+            $spokenText=([string]$result.text).Trim()
+            if([string]::IsNullOrWhiteSpace($spokenText)){
+                $script:HeardText.Text='Local Whisper returned an empty sentence. Please try again.'
+                Set-SpeechStatus 'No sentence detected - retry available' '#FFD166'
+                return
+            }
+
+            $confidence=0.90
+            try{if($null -ne $result.confidence){$confidence=[double]$result.confidence}}catch{}
+
+            # Keep a persistent visible transcript even if Auto-send clears the input box.
+            $script:HeardText.Text=('Last transcript: "'+$spokenText+'"')
+            $script:UserTextBox.Text=$spokenText
+            $script:UserTextBox.CaretIndex=$script:UserTextBox.Text.Length
+            $script:UserTextBox.Focus() | Out-Null
+            Set-SpeechStatus 'Local microphone working - transcript received' '#7CF2B0'
+
+            if($TestOnly){
+                try{
+                    [System.Windows.MessageBox]::Show(
+                        ('Microphone OK.`n`nI heard: "'+$spokenText+'"'),
+                        'Aislinn English Daily V2.0.1.1 - Local microphone test',
+                        'OK',
+                        'Information'
+                    ) | Out-Null
+                }catch{}
+                return
+            }
+
+            if([bool]$script:AutoSendVoiceCheck.IsChecked){
+                # The conversation panel becomes the permanent record of the spoken sentence.
+                Handle-UserTurn $spokenText $confidence
+                # Handle-UserTurn intentionally clears the input after sending. HeardText remains visible.
+                $script:HeardText.Text=('Sent to Aislinn: "'+$spokenText+'"')
+            }
+            return
+        }
+
+        $message=[string]$result.message
+        if([string]::IsNullOrWhiteSpace($message)){$message='No complete sentence was recognized.'}
+        switch($status){
+            'not_prepared' {
+                $script:PrepareMicButton.Visibility=[System.Windows.Visibility]::Visible
+                $script:HeardText.Text='The private local microphone engine is not prepared. Click PREPARE LOCAL MIC once.'
+                Set-SpeechStatus 'Prepare private local mic once' '#FFD166'
+            }
+            'no_result' {
+                $script:HeardText.Text='The microphone opened, but no complete English sentence was detected. Speak one sentence and then pause.'
+                Set-SpeechStatus 'No sentence detected - retry available' '#FFD166'
+            }
+            'device_error' {
+                $script:HeardText.Text=('The private engine could not open the default microphone: '+$message)
+                Set-SpeechStatus 'Default microphone could not be opened' '#FF9A9A'
+            }
+            'cancelled' {
+                $script:HeardText.Text='Listening stopped.'
+                Set-SpeechStatus 'Listening stopped - ready again' '#7CF2B0'
+            }
+            default {
+                $script:HeardText.Text=('Local microphone error: '+$message)
+                Set-SpeechStatus 'Local microphone needs attention - typing still works' '#FF9A9A'
+            }
+        }
+    }catch{
+        $script:HeardText.Text=('Microphone bridge error: '+$_.Exception.Message)
+        Set-SpeechStatus 'Microphone bridge error - retry available' '#FF9A9A'
+    }finally{
+        try{if(-not [string]::IsNullOrWhiteSpace($outputFile) -and (Test-Path -LiteralPath $outputFile)){Remove-Item -LiteralPath $outputFile -Force}}catch{}
+        try{if(-not [string]::IsNullOrWhiteSpace($cancelFile) -and (Test-Path -LiteralPath $cancelFile)){Remove-Item -LiteralPath $cancelFile -Force}}catch{}
+        Reset-MicButtons
+    }
+}
+
+# Override only the UI-to-Whisper bridge. The working local Whisper engine itself is unchanged.
+function Start-Listening{Invoke-LocalMicBlocking $false}
+function Test-Microphone{Invoke-LocalMicBlocking $true}
+
+
+function Normalize-Words([string]$Text){return @((Convert-ToSimple $Text -replace "[^a-z0-9' ]",' ' -replace '\s+',' ').Trim().Split(' ') | Where-Object {$_})}
+function Compare-Phrase([string]$Target,[string]$Heard){
+    $a = @(Normalize-Words $Target)
+    $b = @(Normalize-Words $Heard)
+    if($a.Count -eq 0){ return 0 }
+    if($b.Count -eq 0){ return 0 }
+
+    # Longest common subsequence using two simple 1-D rows.
+    # This is intentionally written without multidimensional array indexing
+    # so it is fully compatible with Windows PowerShell 5.1.
+    $n = $b.Count
+    $previous = New-Object 'int[]' ($n + 1)
+    $current  = New-Object 'int[]' ($n + 1)
+
+    for($i = 1; $i -le $a.Count; $i++){
+        $current[0] = 0
+        for($j = 1; $j -le $n; $j++){
+            if($a[$i - 1] -eq $b[$j - 1]){
+                $current[$j] = $previous[$j - 1] + 1
+            } else {
+                $left = $current[$j - 1]
+                $up   = $previous[$j]
+                if($left -gt $up){ $current[$j] = $left } else { $current[$j] = $up }
+            }
+        }
+        $swap = $previous
+        $previous = $current
+        $current = $swap
+        [Array]::Clear($current, 0, $current.Length)
+    }
+
+    $denominator = [Math]::Max($a.Count, $b.Count)
+    if($denominator -le 0){ return 0 }
+    return [int][Math]::Round((100.0 * $previous[$n]) / $denominator)
+}
+
+function Local-Correction([string]$Text){
+    $corrected = $Text
+    $tips = New-Object System.Collections.Generic.List[string]
+
+    # IMPORTANT: use only straight ASCII quote characters in this block.
+    # Windows PowerShell treats typographic single quotes as quote delimiters,
+    # which caused the parser failure in V1.2.
+    $rules = @(
+        [pscustomobject]@{Pattern="(?i)\bI am agree\b"; Replacement="I agree"; Tip="En ingles se dice I agree, sin am."},
+        [pscustomobject]@{Pattern="(?i)\bI have ([0-9]+) years\b"; Replacement='I am $1 years old'; Tip="Para la edad se usa I am ... years old."},
+        [pscustomobject]@{Pattern="(?i)\bpeople is\b"; Replacement="people are"; Tip="People es plural, asi que usa are."},
+        [pscustomobject]@{Pattern="(?i)\bI didn't went\b"; Replacement="I didn't go"; Tip="Despues de didn't, el verbo va en forma base."},
+        [pscustomobject]@{Pattern="(?i)\bshe don't\b"; Replacement="she doesn't"; Tip="Con he, she o it se usa doesn't."},
+        [pscustomobject]@{Pattern="(?i)\bhe don't\b"; Replacement="he doesn't"; Tip="Con he, she o it se usa doesn't."},
+        [pscustomobject]@{Pattern="(?i)\bhe have\b"; Replacement="he has"; Tip="En presente, con he se usa has."},
+        [pscustomobject]@{Pattern="(?i)\bshe have\b"; Replacement="she has"; Tip="En presente, con she se usa has."},
+        [pscustomobject]@{Pattern="(?i)\bdepends of\b"; Replacement="depends on"; Tip="La combinacion natural es depends on."},
+        [pscustomobject]@{Pattern="(?i)\bmarried with\b"; Replacement="married to"; Tip="La combinacion natural es married to."},
+        [pscustomobject]@{Pattern="(?i)\bmore better\b"; Replacement="better"; Tip="Better ya es comparativo; no necesita more."},
+        [pscustomobject]@{Pattern="(?i)\bexplain me\b"; Replacement="explain it to me"; Tip="Normalmente se dice explain it to me."}
+    )
+
+    foreach($rule in $rules){
+        if($corrected -match $rule.Pattern){
+            $corrected = [regex]::Replace($corrected, $rule.Pattern, $rule.Replacement)
+            [void]$tips.Add($rule.Tip)
+        }
+    }
+
+    $needed = ($corrected -ne $Text)
+    if($tips.Count -gt 0){
+        $explanation = $tips -join ' '
+    } else {
+        $explanation = 'No vi un error importante con las reglas locales.'
+    }
+    return [pscustomobject]@{needed=$needed; corrected=$corrected; explanation=$explanation}
+}
+
+function Append-Conversation([string]$Who,[string]$Text){
+    if($script:ConversationText.Text -eq 'Your conversation will appear here.'){$script:ConversationText.Text=''}
+    if(-not [string]::IsNullOrWhiteSpace($script:ConversationText.Text)){$script:ConversationText.Text += [Environment]::NewLine+[Environment]::NewLine}
+    $script:ConversationText.Text += ('{0}: {1}' -f $Who, $Text)
+    $script:ConversationHistory.Add([pscustomobject]@{role=$(if($Who -eq 'You'){'user'}else{'assistant'});content=$Text})
+    while($script:ConversationHistory.Count -gt 10){$script:ConversationHistory.RemoveAt(0)}
+}
+
+function Get-ModeInstruction{
+    $mode=Get-ComboText $script:ModeCombo
+    switch -Wildcard ($mode){
+        'Pronunciation*'{return 'Focus on shadowing and clear pronunciation. Keep replies short. If the user repeats a target phrase, acknowledge intelligibility and give one practical pronunciation tip.'}
+        'Work English'{return 'Use realistic workplace English: updates, meetings, priorities, clarification and collaboration.'}
+        'Customer service'{return 'Role-play customer service situations with calm professional language.'}
+        'Job interview'{return 'Act as an interviewer and help the user answer clearly, naturally and professionally.'}
+        'Travel English'{return 'Use practical travel situations such as airports, hotels, directions, restaurants and transport.'}
+        'Vocabulary challenge'{return 'Introduce one useful word or collocation at a time and make the user use it in a sentence.'}
+        'Free conversation'{return 'Have a natural open conversation while still correcting important errors.'}
+        default{return 'Use the daily topic and keep the conversation practical, friendly and varied.'}
+    }
+}
+function Correction-Instruction{
+    $style=Get-ComboText $script:CorrectionCombo
+    if($style -like 'Gentle*'){return 'Correct only mistakes that affect meaning, grammar foundations, or naturalness. Do not correct every minor issue.'}
+    if($style -like 'Intensive*'){return 'Correct most noticeable grammar, word choice and naturalness issues, but keep feedback concise.'}
+    return 'Correct meaningful grammar and naturalness issues without interrupting fluency too much.'
+}
+function Start-Ai([string]$UserText,[double]$Confidence){
+    if($script:AiTask){$script:RewardText.Text='The local AI is still answering the previous turn.';return}
+    $level=Level-Code;$mode=Get-ComboText $script:ModeCombo;$goal=$script:GoalBox.Text.Trim();$daily=[string]$script:TodayLesson.topic
+    $system=@"
+You are Aislinn, a supportive English speaking coach. The learner level is $level. Current mode: $mode. Daily topic: $daily.
+$(Get-ModeInstruction)
+$(Correction-Instruction)
+The learner may be using speech recognition, so do not overcorrect obvious transcription noise.
+Return ONLY valid JSON, with no markdown and no extra text, in this exact schema:
+{"reply":"1-3 natural English sentences that continue the conversation and include at most one question","correction_needed":true,"corrected":"a corrected/natural version of the learner sentence, or the original if no correction is needed","explanation_es":"brief Spanish explanation of the most useful correction","pronunciation_tip_es":"one short practical pronunciation tip in Spanish, or empty if not useful","new_words":[{"word":"useful English word/collocation","meaning_es":"short Spanish meaning"}],"encouragement":"very short English encouragement","score":85}
+Rules: score 0-100 should reflect communicative English for the learner's level, not accent identity. Never shame the learner. If no correction is needed, set correction_needed false and say so briefly in explanation_es. Keep new_words to 0-2 items. User goal: $goal. Speech recognition confidence: $([Math]::Round($Confidence*100))%.
+"@
+    $messages=New-Object System.Collections.Generic.List[object];$messages.Add([pscustomobject]@{role='system';content=$system})
+    foreach($h in $script:ConversationHistory){$messages.Add($h)}
+    $payload=[pscustomobject]@{model=$script:ModelName;messages=@($messages);stream=$false;think=$false;keep_alive='10m';options=[pscustomobject]@{temperature=0.45;num_ctx=4096;top_p=0.9}}
+    $body=$payload|ConvertTo-Json -Depth 9 -Compress;$script:AiKind='turn';$script:AiMeta=[pscustomobject]@{user=$UserText;confidence=$Confidence};$script:AiTask=[AislinnEnglishLoopbackHttp]::PostJsonAsync("$($script:OllamaHost)/api/chat",$body,$script:AiTimeoutMs)
+    $script:ModelStatusText.Text='● Local AI thinking...';$script:ModelStatusText.Foreground='#FFD166'
+}
+function Parse-CoachJson([string]$Text){
+    $t=($Text -replace '(?s)<think>.*?</think>','').Trim();$t=$t -replace '^```(?:json)?\s*','';$t=$t -replace '\s*```$','';$a=$t.IndexOf('{');$b=$t.LastIndexOf('}');if($a -lt 0 -or $b -le $a){return $null}
+    try{return ($t.Substring($a,$b-$a+1)|ConvertFrom-Json)}catch{return $null}
+}
+function Apply-CoachResult($Obj,[string]$Original){
+    if($null -eq $Obj){return $false}
+    $reply=[string]$Obj.reply;if([string]::IsNullOrWhiteSpace($reply)){return $false}
+    $corr=[string]$Obj.corrected;if([string]::IsNullOrWhiteSpace($corr)){$corr=$Original}
+    $script:CorrectionText.Text=$(if([bool]$Obj.correction_needed){$corr}else{'✓ Your sentence works well: '+$corr})
+    $exp=[string]$Obj.explanation_es;$pt=[string]$Obj.pronunciation_tip_es;$script:ExplanationText.Text=(($exp+' '+$pt).Trim())
+    $words=@();foreach($w in @($Obj.new_words)){if($w.word){$words += ("$($w.word) = $($w.meaning_es)")}};$script:NewWordsText.Text='New words: '+$(if($words.Count){$words -join ' · '}else{'-'})
+    $score=Safe-Int ([string]$Obj.score) 80 0 100;$script:TurnScoreText.Text="$score/100";Append-Conversation 'Aislinn' $reply;$script:TeacherPromptText.Text=$reply
+    $enc=[string]$Obj.encouragement;if([string]::IsNullOrWhiteSpace($enc)){$enc='Keep going!'};Award-XP ($(if($score -ge 90){5}elseif($score -ge 75){4}else{3})) $enc
+    $spoken=$(if([bool]$Obj.correction_needed){"A more natural way to say it is: $corr. $reply"}else{$reply});Speak-Teacher $spoken;return $true
+}
+function Apply-LocalFallback([string]$Text,[double]$Confidence){
+    $local=Local-Correction $Text;$mode=Get-ComboText $script:ModeCombo
+    if($mode -like 'Pronunciation*'){
+        $target=[string]$script:TodayLesson.shadow_phrase;$sim=Compare-Phrase $target $Text;$script:CorrectionText.Text="Target: $target";$script:ExplanationText.Text="Coincidencia aproximada: $sim%. Esta medida depende del reconocimiento de voz; úsala como guía, no como diagnóstico fonético.";$script:TurnScoreText.Text="$sim/100"
+        $reply=if($sim -ge 88){'Excellent. That was very clear. Try it once more with smooth rhythm.'}elseif($sim -ge 65){'Good attempt. Try the sentence again a little more slowly and connect the words.'}else{'Let us try it in smaller chunks. Listen first, then repeat the sentence.'}
+    }else{
+        $script:CorrectionText.Text=$(if($local.needed){$local.corrected}else{'✓ No major rule-based correction detected.'});$script:ExplanationText.Text=$local.explanation;$script:TurnScoreText.Text=$(if($local.needed){'78/100'}else{'85/100'});$reply='Thanks. Tell me one more detail, using a complete sentence in English.'
+    }
+    $script:NewWordsText.Text='New words: -';Append-Conversation 'Aislinn' $reply;$script:TeacherPromptText.Text=$reply;Award-XP 2 'Practice continues offline';$spoken=$(if($local -and $local.needed){"A better way to say that is: $($local.corrected). $reply"}else{$reply});Speak-Teacher $spoken
+}
+
+function Handle-UserTurn([string]$Text,[double]$Confidence=1.0){
+    $text=$Text.Trim();if([string]::IsNullOrWhiteSpace($text)){return}
+    if(-not $script:SessionActive){Start-Session $false}
+    $script:Turns++;Append-Conversation 'You' $text;$script:UserTextBox.Clear();Award-XP 1 'You spoke English'
+    if((Get-ComboText $script:ModeCombo) -like 'Pronunciation*'){
+        # Always provide immediate local shadowing feedback; AI may enrich other modes.
+        Apply-LocalFallback $text $Confidence;return
+    }
+    if($script:ModelReady){Start-Ai $text $Confidence}else{Apply-LocalFallback $text $Confidence}
+}
+
+$script:AiPoll=New-Object System.Windows.Threading.DispatcherTimer;$script:AiPoll.Interval=[TimeSpan]::FromMilliseconds(200)
+$script:AiPoll.Add_Tick({
+    if($null -eq $script:AiTask -or -not $script:AiTask.IsCompleted){return};$task=$script:AiTask;$kind=$script:AiKind;$meta=$script:AiMeta;$script:AiTask=$null;$script:AiKind='';$script:AiMeta=$null
+    try{
+        $raw=$task.Result
+        if($kind -eq 'status'){
+            $obj=$raw|ConvertFrom-Json;$names=@($obj.models|ForEach-Object{[string]$_.name});$chosen=$null
+            foreach($pref in $script:PreferredModels){$chosen=$names|Where-Object{$_ -eq $pref}|Select-Object -First 1;if($chosen){break}}
+            if(-not $chosen){$chosen=$names|Where-Object{$_ -match '^qwen3'}|Select-Object -First 1}
+            if($chosen){$script:ModelReady=$true;$script:ModelName=[string]$chosen;$script:ModelStatusText.Text="● Local AI ready · $chosen";$script:ModelStatusText.Foreground='#7CF2B0'}else{$script:ModelReady=$false;$script:ModelStatusText.Text='● Ollama ready · no compatible Qwen model';$script:ModelStatusText.Foreground='#FFD166'};return
+        }
+        if($kind -eq 'turn'){
+            $obj=$raw|ConvertFrom-Json;$answer=[string]$obj.message.content;$coach=Parse-CoachJson $answer
+            if(-not (Apply-CoachResult $coach ([string]$meta.user))){Apply-LocalFallback ([string]$meta.user) ([double]$meta.confidence)}
+        }
+    }catch{
+        if($kind -eq 'status'){$script:ModelReady=$false;$script:ModelStatusText.Text='● Local AI unavailable · offline coaching active';$script:ModelStatusText.Foreground='#FFD166'}
+        elseif($kind -eq 'turn'){Apply-LocalFallback ([string]$meta.user) ([double]$meta.confidence)}
+    }finally{if($kind -eq 'turn'){$script:ModelStatusText.Text=$(if($script:ModelReady){"● Local AI ready · $($script:ModelName)"}else{'● Offline coaching active'});$script:ModelStatusText.Foreground=$(if($script:ModelReady){'#7CF2B0'}else{'#FFD166'})}}
+});$script:AiPoll.Start()
+function Start-GetStatus{if($script:AiTask){return};$script:AiKind='status';$script:AiTask=[AislinnEnglishLoopbackHttp]::GetAsync("$($script:OllamaHost)/api/tags",3500)}
+
+function Get-OpeningPrompt{
+    $mode=Get-ComboText $script:ModeCombo
+    if($mode -like 'Pronunciation*'){return "Listen and repeat: $($script:TodayLesson.shadow_phrase)"}
+    if($mode -eq 'Work English'){return 'Imagine we are coworkers. Give me a short update about what you are working on today.'}
+    if($mode -eq 'Customer service'){return 'I am a customer who needs help. Greet me professionally and ask how you can help.'}
+    if($mode -eq 'Job interview'){return 'Let us start an interview. Tell me about yourself in 30 to 60 seconds.'}
+    if($mode -eq 'Travel English'){return 'You have just arrived at a hotel. Start the conversation at the front desk.'}
+    if($mode -eq 'Vocabulary challenge'){return "Use one of today's phrases in a new sentence: $(@($script:TodayLesson.phrases)[0])"}
+    if($mode -eq 'Free conversation'){return 'How has your day been? Tell me one thing that went well and one thing you are thinking about.'}
+    return [string]$script:TodayLesson.starter_prompt
+}
+function Start-Session([bool]$Speak=$true){
+    $script:SessionActive=$true;$script:SessionRemaining=(Session-Minutes)*60;$script:Turns=0;$script:ConversationHistory.Clear();$script:ConversationText.Text='Your conversation will appear here.';$script:SessionStatusText.Text="Active · $(Level-Code) · $(Get-ComboText $script:ModeCombo)";$prompt=Get-OpeningPrompt;$script:TeacherPromptText.Text=$prompt;Append-Conversation 'Aislinn' $prompt;$script:CorrectionText.Text='No correction yet.';$script:ExplanationText.Text='Speak naturally. I will focus on useful corrections.';$script:NewWordsText.Text='New words: -';$script:TurnScoreText.Text='--/100';$script:RewardText.Text='Session started · speak your first sentence ✨'
+    $m=[Math]::Floor($script:SessionRemaining/60);$script:SessionTimerText.Text=('{0:00}:00' -f $m)
+    if($Speak){Speak-Teacher $prompt}
+}
+function New-Prompt{
+    $prompt=Get-OpeningPrompt
+    if((Get-ComboText $script:ModeCombo) -eq 'Free conversation'){$alts=@('What is something you learned recently?','What would you like to improve this month?','Tell me about a place you would like to visit.','What is a small problem you solved recently?','What makes a good teammate?');$prompt=$alts|Get-Random}
+    $script:TeacherPromptText.Text=$prompt;Append-Conversation 'Aislinn' $prompt;Speak-Teacher $prompt
+}
+
+function Save-State{
+    $settings=[pscustomobject]@{level=(Get-ComboText $script:LevelCombo);mode=(Get-ComboText $script:ModeCombo);minutes=(Get-ComboText $script:MinutesCombo);correction=(Get-ComboText $script:CorrectionCombo);goal=$script:GoalBox.Text;voice_enabled=[bool]$script:VoiceCheck.IsChecked;auto_send_voice=[bool]$script:AutoSendVoiceCheck.IsChecked}
+    $progress=[pscustomobject]@{xp=$script:XP;streak=$script:Streak;last_practice_date=$script:LastPracticeDate}
+    try{$settings|ConvertTo-Json -Depth 4|Set-Content -Encoding UTF8 $script:SettingsFile}catch{};try{$progress|ConvertTo-Json -Depth 4|Set-Content -Encoding UTF8 $script:ProgressFile}catch{}
+}
+function Select-ComboText($Combo,[string]$Wanted){if([string]::IsNullOrWhiteSpace($Wanted)){return};for($i=0;$i -lt $Combo.Items.Count;$i++){if([string]$Combo.Items[$i].Content -eq $Wanted){$Combo.SelectedIndex=$i;return}}}
+
+# Defaults and saved settings.
+$script:LevelCombo.SelectedIndex=2;$script:ModeCombo.SelectedIndex=0;$script:MinutesCombo.SelectedIndex=1;$script:CorrectionCombo.SelectedIndex=0
+try{Select-ComboText $script:LevelCombo ([string]$script:Settings.level)}catch{};try{Select-ComboText $script:ModeCombo ([string]$script:Settings.mode)}catch{};try{Select-ComboText $script:MinutesCombo ([string]$script:Settings.minutes)}catch{};try{Select-ComboText $script:CorrectionCombo ([string]$script:Settings.correction)}catch{}
+try{$script:GoalBox.Text=[string]$script:Settings.goal}catch{};try{if($null -ne $script:Settings.voice_enabled){$script:VoiceCheck.IsChecked=[bool]$script:Settings.voice_enabled}}catch{};try{if($null -ne $script:Settings.auto_send_voice){$script:AutoSendVoiceCheck.IsChecked=[bool]$script:Settings.auto_send_voice}}catch{}
+Refresh-DailyLesson
+
+$script:StartSessionButton.Add_Click({Start-Session $true})
+$script:NewPromptButton.Add_Click({New-Prompt})
+function Send-CurrentText{
+    $t=[string]$script:UserTextBox.Text
+    $t=$t.Trim()
+    if(-not [string]::IsNullOrWhiteSpace($t)){Handle-UserTurn $t 1.0}
+}
+$script:SendButton.Add_Click({Send-CurrentText})
+$script:UserTextBox.Add_KeyDown({param($sender,$e);if($e.Key -eq [System.Windows.Input.Key]::Enter){Send-CurrentText;$e.Handled=$true}})
+$script:PrepareMicButton.Add_Click({Prepare-LocalMic})
+$script:TestMicButton.Add_Click({Test-Microphone})
+$script:MicButton.Add_Click({Start-Listening})
+$script:ModeCombo.Add_SelectionChanged({if($script:TodayLesson){$script:TeacherPromptText.Text=Get-OpeningPrompt}})
+$script:VoiceCheck.Add_Unchecked({try{if($script:Synth){$script:Synth.SpeakAsyncCancelAll()}}catch{};$script:Speaking=$false;Set-Frame 'normal'})
+
+$script:Window.Add_Closing({
+    Save-State;try{Stop-Listening}catch{};try{$script:FaceTimer.Stop();$script:SessionTimer.Stop();$script:AiPoll.Stop();$script:MicPollTimer.Stop();$script:PreparePollTimer.Stop()}catch{};try{if($script:Synth){$script:Synth.SpeakAsyncCancelAll();$script:Synth.Dispose()}}catch{};try{if($script:SingleInstanceMutex){$script:SingleInstanceMutex.ReleaseMutex();$script:SingleInstanceMutex.Dispose()}}catch{}
+})
+
+Initialize-LocalMic;Start-GetStatus
+$script:Window.Add_ContentRendered({
+    $hello="Hi! I'm Aislinn. We can practice English for just a few minutes every day. I will correct important mistakes without interrupting your fluency.";$script:TeacherPromptText.Text=$hello;Speak-Teacher $hello
+})
+[void]$script:Window.ShowDialog()

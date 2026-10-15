@@ -1,0 +1,34 @@
+﻿=== AISLINN ENGLISH DAILY - AUDIT ONLY ===
+This script DOES NOT delete or modify anything.
+
+[Aislinn app folders]
+FOUND: C:\Users\DELL OPTIPLEX 7060\AppData\Local\Aislinn English Daily
+FOUND: C:\Users\DELL OPTIPLEX 7060\AppData\Local\Programs\Aislinn English Daily
+
+[Shortcuts]
+
+[Old V1 packages/folders on Desktop and Downloads]
+FOUND: C:\Users\DELL OPTIPLEX 7060\Downloads\Aislinn_English_Daily_V1_1_Fix_Windows.zip
+FOUND: C:\Users\DELL OPTIPLEX 7060\Downloads\Aislinn_English_Daily_V1_2_Fix_Windows.zip
+FOUND: C:\Users\DELL OPTIPLEX 7060\Downloads\Aislinn_English_Daily_V1_3_Validated_Windows.zip
+FOUND: C:\Users\DELL OPTIPLEX 7060\Downloads\Aislinn_English_Daily_V1_5_Microphone_Rebuild_Windows.zip
+FOUND: C:\Users\DELL OPTIPLEX 7060\Downloads\Aislinn_English_Daily_V1_6_1_StartupFix_Windows.zip
+FOUND: C:\Users\DELL OPTIPLEX 7060\Downloads\Aislinn_English_Daily_V1_6_Speech_Installer_Windows.zip
+FOUND: C:\Users\DELL OPTIPLEX 7060\Downloads\Aislinn_English_Daily_V1_Windows.zip
+
+[Running Aislinn processes]
+none
+
+[HKCU uninstall entries]
+
+[Windows en-US capabilities - READ ONLY]
+Language.Basic~~~en-US~0.0.1.0 = unavailable/unknown (La operación solicitada requiere elevación.
+)
+Language.Speech~~~en-US~0.0.1.0 = unavailable/unknown (La operación solicitada requiere elevación.
+)
+Language.TextToSpeech~~~en-US~0.0.1.0 = unavailable/unknown (La operación solicitada requiere elevación.
+)
+
+[Audio services - READ ONLY]
+AudioEndpointBuilder = Running, StartType=Automatic
+Audiosrv = Running, StartType=Automatic

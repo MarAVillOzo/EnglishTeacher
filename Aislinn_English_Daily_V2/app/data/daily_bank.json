@@ -1,0 +1,362 @@
+[
+  {
+    "day": 1,
+    "topic": "Introductions",
+    "goal": "Introduce yourself naturally and ask a follow-up question.",
+    "phrases": [
+      "Nice to meet you.",
+      "I work/study in...",
+      "What about you?"
+    ],
+    "starter_prompt": "Hi! Tell me a little about yourself.",
+    "shadow_phrase": "My name is Alex, and I am interested in learning new things."
+  },
+  {
+    "day": 2,
+    "topic": "Daily routine",
+    "goal": "Describe your weekday routine using present simple.",
+    "phrases": [
+      "I usually...",
+      "I tend to...",
+      "After that, I..."
+    ],
+    "starter_prompt": "Walk me through a normal weekday.",
+    "shadow_phrase": "I usually start my day with a cup of coffee and then I get ready for work."
+  },
+  {
+    "day": 3,
+    "topic": "Food and restaurants",
+    "goal": "Order food and describe preferences politely.",
+    "phrases": [
+      "I would like...",
+      "Could I have...?",
+      "I prefer..."
+    ],
+    "starter_prompt": "Imagine we are at a restaurant. What would you order?",
+    "shadow_phrase": "Could I have the grilled chicken with vegetables, please?"
+  },
+  {
+    "day": 4,
+    "topic": "Travel",
+    "goal": "Talk about trips, airports, hotels, and plans.",
+    "phrases": [
+      "I am planning to...",
+      "How do I get to...?",
+      "I have a reservation."
+    ],
+    "starter_prompt": "You just arrived in a new city. What is the first thing you need to do?",
+    "shadow_phrase": "I have a reservation under my name, and I would like to check in."
+  },
+  {
+    "day": 5,
+    "topic": "Work",
+    "goal": "Explain responsibilities and current tasks.",
+    "phrases": [
+      "I am responsible for...",
+      "Right now, I am working on...",
+      "My main priority is..."
+    ],
+    "starter_prompt": "Tell me what you do at work or what kind of work you would like to do.",
+    "shadow_phrase": "I am responsible for coordinating projects and helping my team solve problems."
+  },
+  {
+    "day": 6,
+    "topic": "Customer service",
+    "goal": "Handle a customer request calmly and clearly.",
+    "phrases": [
+      "How can I help you?",
+      "Let me check that for you.",
+      "I understand your concern."
+    ],
+    "starter_prompt": "I am a customer with a problem. Greet me and offer help.",
+    "shadow_phrase": "I understand your concern. Let me check that for you right away."
+  },
+  {
+    "day": 7,
+    "topic": "Opinions",
+    "goal": "Give an opinion and support it with a reason.",
+    "phrases": [
+      "In my opinion...",
+      "I believe that...",
+      "The main reason is..."
+    ],
+    "starter_prompt": "What is one technology that has improved daily life? Why?",
+    "shadow_phrase": "In my opinion, smartphones have improved daily life because they make communication easier."
+  },
+  {
+    "day": 8,
+    "topic": "Past experiences",
+    "goal": "Tell a short story using past tenses.",
+    "phrases": [
+      "Last year...",
+      "I decided to...",
+      "In the end..."
+    ],
+    "starter_prompt": "Tell me about a memorable day from your past.",
+    "shadow_phrase": "Last year, I visited a new city and tried several things I had never done before."
+  },
+  {
+    "day": 9,
+    "topic": "Future plans",
+    "goal": "Talk about goals and intentions.",
+    "phrases": [
+      "I am going to...",
+      "I hope to...",
+      "I would like to..."
+    ],
+    "starter_prompt": "What is one goal you want to achieve this year?",
+    "shadow_phrase": "I would like to improve my English so I can communicate more confidently."
+  },
+  {
+    "day": 10,
+    "topic": "Shopping",
+    "goal": "Ask about products, sizes, prices, and alternatives.",
+    "phrases": [
+      "How much is this?",
+      "Do you have this in...?",
+      "Could I try it on?"
+    ],
+    "starter_prompt": "You are shopping for something you need. Start the conversation.",
+    "shadow_phrase": "Do you have this in a different size, and could I try it on?"
+  },
+  {
+    "day": 11,
+    "topic": "Directions",
+    "goal": "Give and understand simple directions.",
+    "phrases": [
+      "Go straight.",
+      "Turn left/right.",
+      "It is next to..."
+    ],
+    "starter_prompt": "Explain how to get from your home to a nearby place.",
+    "shadow_phrase": "Go straight for two blocks, then turn right. It is next to the pharmacy."
+  },
+  {
+    "day": 12,
+    "topic": "Phone calls",
+    "goal": "Open, manage, and close a phone conversation.",
+    "phrases": [
+      "May I speak to...?",
+      "Could you repeat that?",
+      "Thanks for calling."
+    ],
+    "starter_prompt": "Pretend you need to call a company and ask for information.",
+    "shadow_phrase": "Hello, I am calling to ask for some information about your services."
+  },
+  {
+    "day": 13,
+    "topic": "Meetings",
+    "goal": "Participate in a meeting politely.",
+    "phrases": [
+      "I would like to add...",
+      "Could you clarify...?",
+      "I agree with that point."
+    ],
+    "starter_prompt": "We are in a short meeting. Share an idea for improving a project.",
+    "shadow_phrase": "I would like to add one idea that could make the process more efficient."
+  },
+  {
+    "day": 14,
+    "topic": "Problem solving",
+    "goal": "Describe a problem and propose a solution.",
+    "phrases": [
+      "The issue is...",
+      "One option would be...",
+      "We could try..."
+    ],
+    "starter_prompt": "Tell me about a small problem and how you would solve it.",
+    "shadow_phrase": "The issue is that we are running out of time, so we could simplify the first step."
+  },
+  {
+    "day": 15,
+    "topic": "Hobbies",
+    "goal": "Talk about free-time activities and preferences.",
+    "phrases": [
+      "I enjoy...",
+      "I am really into...",
+      "I started... because..."
+    ],
+    "starter_prompt": "What do you enjoy doing in your free time?",
+    "shadow_phrase": "I enjoy playing video games because they help me relax and think creatively."
+  },
+  {
+    "day": 16,
+    "topic": "Movies and series",
+    "goal": "Recommend entertainment and explain why.",
+    "phrases": [
+      "I recommend...",
+      "It is about...",
+      "What I liked most was..."
+    ],
+    "starter_prompt": "Recommend a movie, series, or game you enjoyed.",
+    "shadow_phrase": "I recommend it because the story is engaging and the characters feel realistic."
+  },
+  {
+    "day": 17,
+    "topic": "Learning",
+    "goal": "Explain how you learn something new.",
+    "phrases": [
+      "I learn best when...",
+      "I practice by...",
+      "What helps me most is..."
+    ],
+    "starter_prompt": "How do you usually learn a new skill?",
+    "shadow_phrase": "I learn best when I practice regularly and use what I learn in real situations."
+  },
+  {
+    "day": 18,
+    "topic": "Technology",
+    "goal": "Discuss devices, software, and AI in everyday English.",
+    "phrases": [
+      "I use it for...",
+      "It helps me...",
+      "One advantage is..."
+    ],
+    "starter_prompt": "What piece of technology do you use the most?",
+    "shadow_phrase": "I use my computer every day because it helps me work, study, and create things."
+  },
+  {
+    "day": 19,
+    "topic": "Health and habits",
+    "goal": "Discuss general healthy habits without medical advice.",
+    "phrases": [
+      "I try to...",
+      "It is important to...",
+      "A good habit is..."
+    ],
+    "starter_prompt": "What is one healthy habit you would like to maintain?",
+    "shadow_phrase": "I try to sleep enough and take short breaks when I work for a long time."
+  },
+  {
+    "day": 20,
+    "topic": "Weather and plans",
+    "goal": "Connect weather with daily plans.",
+    "phrases": [
+      "It looks like...",
+      "If it rains...",
+      "I might..."
+    ],
+    "starter_prompt": "The weather changed suddenly. How does that affect your plans?",
+    "shadow_phrase": "If it rains this afternoon, I might stay home and finish a few things."
+  },
+  {
+    "day": 21,
+    "topic": "Job interview",
+    "goal": "Answer a common interview question clearly.",
+    "phrases": [
+      "My experience includes...",
+      "One of my strengths is...",
+      "I learned how to..."
+    ],
+    "starter_prompt": "Tell me about yourself as if this were a job interview.",
+    "shadow_phrase": "My experience includes customer service and project coordination, and I enjoy solving problems."
+  },
+  {
+    "day": 22,
+    "topic": "Achievements",
+    "goal": "Describe an accomplishment with context and result.",
+    "phrases": [
+      "I am proud of...",
+      "The challenge was...",
+      "As a result..."
+    ],
+    "starter_prompt": "Tell me about something you are proud of accomplishing.",
+    "shadow_phrase": "I am proud of completing a difficult project because I learned how to organize my work better."
+  },
+  {
+    "day": 23,
+    "topic": "Small talk",
+    "goal": "Keep a friendly casual conversation going.",
+    "phrases": [
+      "How has your day been?",
+      "That sounds interesting.",
+      "What have you been up to?"
+    ],
+    "starter_prompt": "Start a friendly conversation as if we just met at an event.",
+    "shadow_phrase": "Hi! How has your day been so far?"
+  },
+  {
+    "day": 24,
+    "topic": "Comparisons",
+    "goal": "Compare two options naturally.",
+    "phrases": [
+      "Compared with...",
+      "I prefer... because...",
+      "On the other hand..."
+    ],
+    "starter_prompt": "Compare working from home with working in an office.",
+    "shadow_phrase": "I prefer working from home because it is flexible, but an office can make collaboration easier."
+  },
+  {
+    "day": 25,
+    "topic": "Agreeing and disagreeing",
+    "goal": "Disagree politely and explain your view.",
+    "phrases": [
+      "I see your point, but...",
+      "I am not sure I agree.",
+      "From my perspective..."
+    ],
+    "starter_prompt": "I say: \"Everyone should work from home.\" Respond politely.",
+    "shadow_phrase": "I see your point, but I think some teams work better when they can meet in person."
+  },
+  {
+    "day": 26,
+    "topic": "Storytelling",
+    "goal": "Tell a clear story with beginning, middle, and end.",
+    "phrases": [
+      "At first...",
+      "Then...",
+      "Eventually..."
+    ],
+    "starter_prompt": "Tell me a short story about an unexpected situation.",
+    "shadow_phrase": "At first, everything seemed normal, but then something unexpected happened and we had to change our plan."
+  },
+  {
+    "day": 27,
+    "topic": "Explaining a process",
+    "goal": "Explain steps in a logical order.",
+    "phrases": [
+      "First...",
+      "Next...",
+      "Finally..."
+    ],
+    "starter_prompt": "Explain how to make or do something you know well.",
+    "shadow_phrase": "First, prepare what you need. Next, follow the main steps carefully. Finally, check the result."
+  },
+  {
+    "day": 28,
+    "topic": "Persuasion",
+    "goal": "Make a simple recommendation and justify it.",
+    "phrases": [
+      "You should consider...",
+      "The biggest benefit is...",
+      "It would help because..."
+    ],
+    "starter_prompt": "Convince me to try a hobby or activity you like.",
+    "shadow_phrase": "You should consider trying it because it is fun, practical, and easy to start."
+  },
+  {
+    "day": 29,
+    "topic": "Advanced fluency",
+    "goal": "Use nuance, examples, and natural connectors.",
+    "phrases": [
+      "That being said...",
+      "For instance...",
+      "To some extent..."
+    ],
+    "starter_prompt": "Do you think technology always makes life easier?",
+    "shadow_phrase": "Technology makes many tasks easier; that being said, it can also create new distractions and dependencies."
+  },
+  {
+    "day": 30,
+    "topic": "Monthly review",
+    "goal": "Reflect on progress and set the next goal.",
+    "phrases": [
+      "I have improved at...",
+      "I still need to work on...",
+      "My next goal is..."
+    ],
+    "starter_prompt": "What has improved in your English, and what do you want to improve next?",
+    "shadow_phrase": "I have improved at speaking more confidently, and my next goal is to use more natural expressions."
+  }
+]
